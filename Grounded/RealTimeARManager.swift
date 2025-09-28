@@ -17,9 +17,15 @@ class RealTimeARManager: ObservableObject {
     @Published var lastUpdateTime: Date?
     
     private var updateTimer: Timer?
-    private let updateInterval: TimeInterval = 5.0 // 5 second updates - faster for more accurate detection
+    var currentPhase: CrisisPhase = .computerVision
+    private let updateInterval: TimeInterval = 5.0 // 5 second updates for AR phase
     private let serverIP = "100.66.12.253"
     private let serverPort = "2419"
+    
+    enum CrisisPhase {
+        case computerVision  // Phase 1: CV scanning only
+        case arMode          // Phase 2: AR visualization enabled
+    }
     
     // Camera controller reference for real image capture
     weak var cameraController: ContinuousCameraViewController?
@@ -30,13 +36,29 @@ class RealTimeARManager: ObservableObject {
     private var averageProcessingTime: TimeInterval = 0
     
     func startRealTimeDetection() {
-        print("🎯 DISABLED - Mock real-time AR detection removed for real camera")
-        // Mock AR detection disabled - using real camera only
-        /*
+        currentPhase = .arMode
+        print("🎯 Starting real-time AR detection in AR mode")
+        
+        // Only start in AR mode - CV phase is handled by PingARManager
         updateTimer = Timer.scheduledTimer(withTimeInterval: updateInterval, repeats: true) { [weak self] _ in
             self?.captureAndProcessFrame()
         }
-        */
+    }
+    
+    func startRealTimeDetectionWithPhase(_ phase: CrisisPhase) {
+        currentPhase = phase
+        
+        switch phase {
+        case .computerVision:
+            print("🚫 RealTimeARManager disabled during CV phase - PingARManager handles scanning")
+            // Don't start timer during CV phase
+            
+        case .arMode:
+            print("🎯 Starting real-time AR detection in AR mode")
+            updateTimer = Timer.scheduledTimer(withTimeInterval: updateInterval, repeats: true) { [weak self] _ in
+                self?.captureAndProcessFrame()
+            }
+        }
     }
     
     func stopRealTimeDetection() {
@@ -143,8 +165,14 @@ class RealTimeARManager: ObservableObject {
                     print("  📍 \(object.label) at coordinates (x: \(String(format: "%.2f", object.box_x)), y: \(String(format: "%.2f", object.box_y)))")
                 }
                 
-                // TODO: Trigger 3D AR visualization for real-time objects if needed
-                // This could integrate with the 3D ping system for automatic visualization
+                // Phase-aware AR visualization
+                if currentPhase == .arMode {
+                    print("✨ AR PHASE: Real-time objects ready for 3D visualization")
+                    // TODO: Trigger 3D AR visualization for real-time objects if needed
+                    // This could integrate with the 3D ping system for automatic visualization
+                } else {
+                    print("📸 CV PHASE: Real-time objects detected but AR visualization disabled")
+                }
             }
             
         } catch {

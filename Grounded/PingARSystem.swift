@@ -77,20 +77,38 @@ class PingARManager: ObservableObject {
     @Published var lastUpdateTime: Date?
     
     private var updateTimer: Timer?
-    private let updateInterval: TimeInterval = 3.0 // 3 second updates - faster for more accurate detection
+    var currentPhase: CrisisPhase = .computerVision
+    private let cvUpdateInterval: TimeInterval = 1.0 // 1 second for CV phase
+    private let arUpdateInterval: TimeInterval = 3.0 // 3 seconds for AR phase
     private let serverIP = "100.66.12.253"
     private let serverPort = "2419"
     
+    enum CrisisPhase {
+        case computerVision  // Phase 1: CV scanning only
+        case arMode          // Phase 2: AR visualization enabled
+    }
+    
     // Camera controller reference for REAL image capture
     weak var cameraController: ContinuousCameraViewController?
+    
+    // Crisis manager reference for phase coordination
+    weak var crisisManager: CrisisManager?
     
     // Performance tracking
     private var frameCount = 0
     private var successfulDetections = 0
     
     func startContinuousDetection() {
-        print("🎯 Starting continuous COCO object detection with REAL camera screenshots")
-        updateTimer = Timer.scheduledTimer(withTimeInterval: updateInterval, repeats: true) { [weak self] _ in
+        // Default to CV phase for backward compatibility
+        startContinuousDetectionWithPhase(.computerVision)
+    }
+    
+    func startContinuousDetectionWithPhase(_ phase: CrisisPhase) {
+        currentPhase = phase
+        let interval = phase == .computerVision ? cvUpdateInterval : arUpdateInterval
+        
+        print("🎯 Starting \(phase == .computerVision ? "CV scanning" : "AR mode") detection (every \(interval)s)")
+        updateTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             self?.captureAndProcessFrame()
         }
     }
@@ -98,10 +116,18 @@ class PingARManager: ObservableObject {
     func stopContinuousDetection() {
         updateTimer?.invalidate()
         updateTimer = nil
-        print("🛑 Continuous detection stopped")
+        isProcessing = false
+        frameCount = 0
+        print("🛑 Continuous detection stopped - timer invalidated and state reset")
     }
     
     private func captureAndProcessFrame() {
+        // SAFETY CHECK: Don't run detection cycles in AR mode
+        guard currentPhase == .computerVision else {
+            print("🚫 Detection cycle blocked - AR mode active, no detection needed")
+            return
+        }
+        
         guard !isProcessing else {
             print("⏸️ Skipping detection - previous still processing to prevent freeze")
             return
@@ -226,6 +252,9 @@ class PingARManager: ObservableObject {
                 successfulDetections += 1
                 lastUpdateTime = Date()
                 
+                // Increment scan count in crisis manager
+                crisisManager?.incrementScanCount()
+                
                 print("🎯 anchor_backend OpenCV detected \(detections.count) objects:")
                 for detection in detections {
                     let className = COCOClasses.getClassName(for: detection.class_id)
@@ -244,25 +273,32 @@ class PingARManager: ObservableObject {
         }
     }
     
-    // ULTRA SIMPLIFIED: Show only 1 random object to prevent video freeze
+    // Phase-aware visualization: CV phase logs only, AR phase shows visuals
     private func triggerAutomaticVisualization(for objects: [PingARObject]) {
-        // Only show 1 random high-confidence object to prevent any UI freeze
-        let highConfidenceObjects = objects.filter { $0.confidence > 0.8 } // Very high threshold
+        let highConfidenceObjects = objects.filter { $0.confidence > 0.8 }
         
         guard let randomObject = highConfidenceObjects.randomElement() else {
             print("🚫 No high-confidence objects to visualize")
             return
         }
         
-        print("✨ MINIMAL: Showing 1 random object: \(randomObject.className)")
-        
-        // COMPLETELY DISABLE AR OVERLAYS FOR NOW - just log coordinates
-        print("🎯 DETECTED: \(randomObject.className) at (\(String(format: "%.2f", randomObject.box_x)), \(String(format: "%.2f", randomObject.box_y)))")
-        print("🚫 AR overlay DISABLED to prevent video freeze")
-        
-        // Don't set pingObjects at all - just log the detection
-        // pingObjects = []
-        // pingObjects = [randomObject]
+        switch currentPhase {
+        case .computerVision:
+            // PHASE 1: CV scanning - only log coordinates, no AR rendering
+            print("📸 CV PHASE: Detected \(randomObject.className) at (\(String(format: "%.2f", randomObject.box_x)), \(String(format: "%.2f", randomObject.box_y)))")
+            print("🚫 AR rendering DISABLED during CV scanning phase")
+            // Don't set pingObjects - no visual overlays during CV phase
+            
+        case .arMode:
+            // PHASE 2: AR mode - enable full visualization
+            print("✨ AR PHASE: Showing 3D ping for \(randomObject.className)")
+            pingObjects = [randomObject]
+            
+            // Auto-clear pings after 3 seconds
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+                self.clearPings()
+            }
+        }
     }
     
     // DISABLED 3D AR to prevent freeze
@@ -304,6 +340,12 @@ class PingARManager: ObservableObject {
     func getStats() -> (frameCount: Int, successRate: Double, objectCount: Int) {
         let successRate = frameCount > 0 ? Double(successfulDetections) / Double(frameCount) : 0
         return (frameCount, successRate, detectedObjects.count)
+    }
+    
+    func resetFrameCounts() {
+        frameCount = 0
+        successfulDetections = 0
+        print("🔄 PingARManager frame counts reset")
     }
 }
 

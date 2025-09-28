@@ -25,6 +25,9 @@ struct CameraView: UIViewControllerRepresentable {
         crisisManager.realTimeARManager.cameraController = controller
         crisisManager.pingARManager.cameraController = controller
         
+        // Set crisis manager reference for phase coordination
+        crisisManager.pingARManager.crisisManager = crisisManager
+        
         return controller
     }
     
@@ -36,21 +39,38 @@ struct CameraView: UIViewControllerRepresentable {
 // MARK: - Camera View with Overlay
 
 struct CameraViewWithOverlay: View {
-    let crisisManager: CrisisManager
+    @ObservedObject var crisisManager: CrisisManager
     
     var body: some View {
         ZStack {
-            CameraView(crisisManager: crisisManager, videoCaptureEnabled: true)
+            // PHASE 1: CV Scanning - Show camera feed
+            if crisisManager.isInComputerVisionPhase() {
+                CameraView(crisisManager: crisisManager, videoCaptureEnabled: true)
+            }
+            // PHASE 2: AR Mode - ARKit handles camera, no separate CameraView needed
             
-            // Ping AR Overlay System DISABLED to prevent video freeze
-            // PingAROverlay(pingManager: crisisManager.pingARManager)
-            
-            // AR Breathing Anchor + 3D AR Pings DISABLED to prevent video freeze
-            // if crisisManager.showingBreathingAnchor || crisisManager.isCrisisMode {
-            //     ARKitBreathingAnchor()
-            //         .transition(.opacity)
-            //     AR3DPingOverlay(pingManager: crisisManager.ar3DPingManager)
-            // }
+            // PHASE 1: CV Scanning - No AR overlays to prevent Metal conflicts
+            if crisisManager.isInComputerVisionPhase() {
+                VStack {
+                    HStack {
+                        Spacer()
+                        PhaseIndicatorView(crisisManager: crisisManager)
+                            .padding()
+                    }
+                    Spacer()
+                }
+            } else {
+                // PHASE 2: AR Mode - EXACTLY like the working AR demo!
+                // Just show the AR orb - no complex overlays, no background gradients
+                SimpleARKitView { sceneView in
+                    print("🏆 AR Mode scene ready - just like the demo!")
+                }
+                .ignoresSafeArea()
+                .onAppear {
+                    print("🏆 TRANSITIONING TO AR MODE - Using demo approach!")
+                    print("🏆 AR Mode active - clean AR orb like the demo!")
+                }
+            }
 
             VStack {
                 if !crisisManager.userSpeech.isEmpty {
@@ -68,17 +88,7 @@ struct CameraViewWithOverlay: View {
                 BottomCaptionView(crisisManager: crisisManager)
             }
             
-            // Minimal Control Overlay (Top-right corner only)
-            VStack {
-                HStack {
-                    
-                    Spacer()
-                    
-                }
-                .padding(.top, 50)
-                
-                Spacer()
-            }
+            // Test button removed - AR mode is now automatic!
         }
     }
 }
@@ -124,6 +134,7 @@ class ContinuousCameraViewController: UIViewController {
     private var speechDebounceTimer: Timer?
     var pendingSpeechText: String = ""
     private let speechDebounceDelay: TimeInterval = 2.0 // Wait 2s for silence - balanced for responsiveness
+    
     
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -246,7 +257,7 @@ class ContinuousCameraViewController: UIViewController {
         }
     }
     
-    private func stopCameraPreview() {
+    func stopCameraPreview() {
         DispatchQueue.global(qos: .userInitiated).async {
             if self.captureSession?.isRunning == true {
                 self.captureSession?.stopRunning()
@@ -321,9 +332,6 @@ class ContinuousCameraViewController: UIViewController {
         // Start speech recognition
         startSpeechRecognition()
         
-        // Start audio level monitoring for interruption detection
-        startAudioLevelMonitoring()
-        
         // Image capture disabled - focusing on conversation only
         // Image capture disabled - focusing on conversation
     }
@@ -347,16 +355,30 @@ class ContinuousCameraViewController: UIViewController {
                 if let result = result {
                     let newText = result.bestTranscription.formattedString
                     self?.recognizedText = newText
-                    print("🎤 Speech recognized (live): \(newText)")
+                    print("🎤 Speech recognized (live): '\(newText)' (final: \(result.isFinal))")
                     
                     // Implement debounce: only send after silence
                     if !newText.isEmpty {
+                        print("Processing speech: '\(newText)' (final: \(result.isFinal))")
                         self?.handleSpeechWithDebounce(newText, isFinal: result.isFinal)
                     }
                 }
                 
                 if let error = error {
-                    print("❌ Speech recognition error: \(error)")
+                    print("Speech recognition error: \(error)")
+                    
+                    // Handle specific error codes
+                    if let nsError = error as NSError? {
+                        switch nsError.code {
+                        case 1110: // No speech detected
+                            print("No speech detected - this is normal during silence")
+                        case 1101: // Service error
+                            print("Speech recognition service error - will retry")
+                            // Don't restart immediately, let the system handle it
+                        default:
+                            print("Speech recognition error code: \(nsError.code)")
+                        }
+                    }
                 }
             }
         }
@@ -382,16 +404,6 @@ class ContinuousCameraViewController: UIViewController {
         }
     }
     
-    private func startAudioLevelMonitoring() {
-        guard let audioEngine = audioEngine else { return }
-        
-        let inputNode = audioEngine.inputNode
-        let _ = inputNode.outputFormat(forBus: 0)
-        
-        // Disabled aggressive audio monitoring that was interrupting TTS
-        // Let the speech recognition handle interruption more intelligently
-        print("🎤 Audio level monitoring disabled to prevent TTS interruption")
-    }
     
     private func getCurrentAudioLevel() -> Float? {
         guard let audioEngine = audioEngine else { return nil }
@@ -407,30 +419,35 @@ class ContinuousCameraViewController: UIViewController {
     func pauseSpeechRecognition() {
         isSpeechRecognitionPaused = true
         
-        // CRITICAL: Actually stop speech recognition to prevent AI audio accumulation
-        recognitionRequest?.endAudio()
-        recognitionTask?.cancel()
-        audioEngine?.stop()
-        audioEngine?.inputNode.removeTap(onBus: 0)
-        
         // Clear all buffers
         pendingSpeechText = ""
         speechDebounceTimer?.invalidate()
         speechDebounceTimer = nil
         
-        print("⏸️ Speech recognition STOPPED completely - no AI leakage possible")
+        print("Speech recognition paused - no AI leakage possible")
     }
     
     func resumeSpeechRecognition() {
         isSpeechRecognitionPaused = false
         
-        // CRITICAL: Restart speech recognition with completely fresh session
-        // Restarting speech recognition
+        print("Resuming speech recognition...")
         
-        // Small delay to ensure audio session is ready
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-            self.startSpeechRecognition()
-        }
+        // Don't restart speech recognition - just resume the existing session
+        // This prevents the kAFAssistantErrorDomain Code=1110 errors
+    }
+    
+    func stopSpeechRecognition() {
+        // Completely stop speech recognition during TTS
+        audioEngine?.stop()
+        recognitionRequest?.endAudio()
+        recognitionTask?.cancel()
+        print("🛑 Speech recognition completely stopped for TTS")
+    }
+    
+    func restartSpeechRecognition() {
+        // Restart speech recognition after TTS
+        startSpeechRecognition()
+        print("🔄 Speech recognition restarted after TTS")
     }
     
     // MARK: - Speech Debounce Logic
@@ -442,10 +459,10 @@ class ContinuousCameraViewController: UIViewController {
             return
         }
         
-        // Check if AI is currently speaking - if so, queue the speech instead of processing
-        if let crisisManager = crisisManager, crisisManager.isTTSPlaying {
-            print("🚫 AI is speaking - queuing user speech: '\(text)'")
-            pendingSpeechText = text
+        // Check if listening is enabled OR AI is speaking - ignore speech in both cases (echo prevention)
+        if let crisisManager = crisisManager, (!crisisManager.isListeningEnabled || crisisManager.isTTSPlaying) {
+            print("Speech ignored - isListeningEnabled: \(crisisManager.isListeningEnabled), isTTSPlaying: \(crisisManager.isTTSPlaying)")
+            print("Speech ignored (AI speaking or Anchor message - preventing echo): '\(text)'")
             return
         }
         
@@ -672,6 +689,9 @@ extension ContinuousCameraViewController: AVCapturePhotoCaptureDelegate {
         }
         
         print("✅ Real camera image captured: \(image.size.width)x\(image.size.height)")
+        
+        // Notify CrisisManager of successful camera capture (for Anchor voice timing)
+        crisisManager?.onSuccessfulCameraCapture()
         
         // If this was for AR processing, handle that first
         if let completion = arProcessingCompletion {
@@ -1182,4 +1202,62 @@ struct BottomCaptionView: View {
         return attributedString
     }
     
+}
+
+// MARK: - Phase Indicator View
+struct PhaseIndicatorView: View {
+    @ObservedObject var crisisManager: CrisisManager
+    @State private var pulseScale: CGFloat = 1.0
+    
+    var body: some View {
+        let phaseStatus = crisisManager.getPhaseStatus()
+        
+        VStack(alignment: .trailing, spacing: 8) {
+            // Phase indicator
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(phaseStatus.phase == .computerVision ? Color.orange : Color.green)
+                    .frame(width: 8, height: 8)
+                    .scaleEffect(pulseScale)
+                
+                Text(phaseStatus.phase.description)
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .foregroundColor(.white)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(Color.black.opacity(0.7))
+            )
+            
+            // Scan count (CV phase only)
+            if phaseStatus.phase == .computerVision {
+                Text("Scans: \(phaseStatus.scanCount)")
+                    .font(.caption2)
+                    .foregroundColor(.orange)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 2)
+                    .background(
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(Color.black.opacity(0.5))
+                    )
+            }
+            
+            // Elapsed time
+            Text("\(Int(abs(phaseStatus.elapsedTime)))s")
+                .font(.caption2)
+                .foregroundColor(.white.opacity(0.8))
+        }
+        .onAppear {
+            startPulseAnimation()
+        }
+    }
+    
+    private func startPulseAnimation() {
+        withAnimation(.easeInOut(duration: 1.0).repeatForever(autoreverses: true)) {
+            pulseScale = 1.2
+        }
+    }
 }

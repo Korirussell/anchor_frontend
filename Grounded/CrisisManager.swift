@@ -25,6 +25,41 @@ class CrisisManager: NSObject, ObservableObject {
     @Published var userSpeech: String = ""
     private var isAnyAudioPlaying: Bool = false
     
+    // MARK: - Sequential Two-Phase System
+    @Published var currentPhase: CrisisPhase = .computerVision
+    @Published var phaseStartTime: Date?
+    @Published var cvScanCount: Int = 0
+    private var phaseTransitionTimer: Timer?
+    
+    // Anchor voice timing control
+    private var hasPlayedAnchorWelcome: Bool = false
+    private var waitingForFirstCameraCapture: Bool = true
+    private var voiceInputTimer: Timer?
+    var isListeningEnabled: Bool = false
+    
+    enum CrisisPhase {
+        case computerVision  // Phase 1: CV scanning (0-10 seconds)
+        case arMode          // Phase 2: AR visualization (10+ seconds)
+        
+        var description: String {
+            switch self {
+            case .computerVision:
+                return "PHASE 1: CV Scanning"
+            case .arMode:
+                return "PHASE 2: AR Mode"
+            }
+        }
+        
+        var duration: TimeInterval {
+            switch self {
+            case .computerVision:
+                return 10.0  // 10 seconds of CV scanning
+            case .arMode:
+                return Double.infinity  // AR mode continues indefinitely
+            }
+        }
+    }
+    
     // Conversational Audio System
     private var currentTTSRequest: String?
     private var pendingTTSRequest: String?
@@ -148,6 +183,7 @@ class CrisisManager: NSObject, ObservableObject {
     
     private func startFreshCrisisSession() {
         isCrisisMode = true
+        startPhase1ComputerVision()
         crisisStartTime = Date()
         lastResponseTime = Date()
         conversationActive = true
@@ -165,6 +201,11 @@ class CrisisManager: NSObject, ObservableObject {
         lastSentSpeech = ""
         currentSpeechBuffer = ""
         lastTTSRequestTime = nil
+        
+        // Reset Anchor voice timing
+        hasPlayedAnchorWelcome = false
+        waitingForFirstCameraCapture = true
+        isListeningEnabled = false
         
         // Real AR detection will be handled by the detection systems
         
@@ -195,8 +236,8 @@ class CrisisManager: NSObject, ObservableObject {
         // Reconfigure audio session for new session
         setupSpeechSynthesizer()
         
-        // Phase 1: Initial Stabilization (Uninterruptible)
-        speakInitialStabilization()
+        // Phase 1: Wait for successful camera capture before playing Anchor voice
+        print("🎤 Waiting for successful camera capture before playing Anchor welcome...")
         
         // Phase 2: Start monitoring after stabilization
         DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) {
@@ -210,13 +251,117 @@ class CrisisManager: NSObject, ObservableObject {
     // MARK: - Hybrid TTS System (OpenAI + Native)
     
     private func speakInitialStabilization() {
-        // Use pre-recorded OpenAI audio for maximum impact
-        playCriticalAudioFile("intro_calm.mp3", interruptible: false)
+        // Play the pre-generated Anchor welcome audio immediately
+        playAnchorWelcomeAudio()
+    }
+    
+    private func playAnchorWelcomeAudio() {
+        print("🎤 Playing Anchor welcome audio immediately...")
         
-        // Test audio immediately
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            self.testAudio()
+        // CRITICAL: Stop speech recognition before playing anchor audio
+        stopSpeechRecognition()
+        
+        // Try to load the bundled Anchor welcome audio
+        guard let audioPath = Bundle.main.path(forResource: "AnchorWelcome", ofType: "mp3") else {
+            print("❌ AnchorWelcome.mp3 not found in bundle - using fallback")
+            // Fallback to OpenAI TTS if file not found
+            let fallbackText = "I'm Anchor. I've notified your close contacts, and they'll reach out soon. Until then, you're not alone — we can try grounding, breathing, or soothing videos. Tell me what feels right, or I can guide you."
+            speakWithOpenAI(text: fallbackText, interruptible: false)
+            return
         }
+        
+        do {
+            // Stop any current audio
+            mainAudioPlayer?.stop()
+            
+            // Configure audio session for uninterrupted playback
+            let audioSession = AVAudioSession.sharedInstance()
+            try audioSession.setCategory(.playAndRecord, mode: .spokenAudio, options: [.defaultToSpeaker, .allowBluetooth, .duckOthers, .interruptSpokenAudioAndMixWithOthers])
+            try audioSession.setActive(true, options: [])
+            print("🔊 Audio session configured for Anchor welcome")
+            
+            // Create audio player with the bundled file
+            let audioURL = URL(fileURLWithPath: audioPath)
+            mainAudioPlayer = try AVAudioPlayer(contentsOf: audioURL)
+            mainAudioPlayer?.delegate = self
+            mainAudioPlayer?.volume = 1.0
+            mainAudioPlayer?.numberOfLoops = 0
+            mainAudioPlayer?.prepareToPlay()
+            
+            // Set TTS playing flag to prevent echo
+            isTTSPlaying = true
+            isListeningEnabled = false
+            print("🎤 Speech recognition stopped and listening disabled during Anchor message")
+            
+            // Play the Anchor welcome audio
+            if mainAudioPlayer?.play() == true {
+                print("🎵 Playing Anchor welcome audio (\(mainAudioPlayer?.duration ?? 0)s)")
+                
+                // Enable listening after Anchor message duration (about 11 seconds)
+                let anchorDuration = mainAudioPlayer?.duration ?? 11.0
+                DispatchQueue.main.asyncAfter(deadline: .now() + anchorDuration) {
+                    self.enableListeningAfterAnchor()
+                }
+            } else {
+                print("❌ Failed to play Anchor welcome audio")
+                // Enable listening immediately if audio fails
+                enableListeningAfterAnchor()
+            }
+            
+        } catch {
+            print("❌ Error playing Anchor welcome audio: \(error)")
+            // Enable listening immediately if audio fails
+            enableListeningAfterAnchor()
+        }
+    }
+    
+    private func enableUserResponseAfterAnchor() {
+        print("🎤 Anchor message complete - enabling user response!")
+        
+        // Resume speech recognition for user input
+        cameraController?.resumeSpeechRecognition()
+        
+        // Set dialogue phase to allow user interaction
+        currentDialoguePhase = .continuousDialogue
+        
+        // Clear TTS state
+        isTTSPlaying = false
+        isProcessingTTS = false
+        
+        print("✅ User can now speak to the LLM!")
+    }
+    
+    // MARK: - Camera Capture Success Handler
+    
+    func onSuccessfulCameraCapture() {
+        // Only play Anchor welcome on the first successful capture
+        guard waitingForFirstCameraCapture && !hasPlayedAnchorWelcome else {
+            return
+        }
+        
+        print("📸 First successful camera capture detected - playing Anchor welcome!")
+        waitingForFirstCameraCapture = false
+        hasPlayedAnchorWelcome = true
+        
+        // Play Anchor welcome audio immediately after successful camera capture
+        playAnchorWelcomeAudio()
+    }
+    
+    private func enableListeningAfterAnchor() {
+        print("Anchor message complete - enabling listening!")
+        
+        // Enable listening flag
+        isListeningEnabled = true
+        
+        // Set dialogue phase to allow user interaction
+        currentDialoguePhase = .continuousDialogue
+        
+        // Clear TTS state
+        isTTSPlaying = false
+        isProcessingTTS = false
+        
+        print("User can now speak to the LLM - speech recognition is listening!")
+        print("Final state - isListeningEnabled: \(isListeningEnabled), isTTSPlaying: \(isTTSPlaying)")
     }
     
     private func playCriticalAudioFile(_ filename: String, interruptible: Bool = true) {
@@ -298,12 +443,6 @@ class CrisisManager: NSObject, ObservableObject {
         // Voice test removed - using OpenAI TTS only
     }
     
-    // Method to test OpenAI voices
-    func testOpenAIVoice(_ voice: String) {
-        let testText = "Hello, this is an OpenAI voice test. How do I sound?"
-        currentOpenAIVoice = voice
-        speakWithOpenAI(text: testText, interruptible: true)
-    }
     
     // Method to test OpenAI with different speeds
     func testOpenAIVoiceWithSpeed(_ voice: String, speed: Float) {
@@ -348,58 +487,6 @@ class CrisisManager: NSObject, ObservableObject {
         speakWithOpenAI(text: calmingText, interruptible: true)
     }
     
-    // Test different calming voices
-    func testCalmingVoice(_ voice: String) {
-        let calmingText = "Hello, I'm your calming companion. I'm here to help you feel safe and grounded. Take a deep breath and know that this feeling will pass. You're doing great just by being here."
-        currentOpenAIVoice = voice
-        speakWithOpenAI(text: calmingText, interruptible: true)
-    }
-    
-    // Preview voice with short sample
-    func previewVoice(_ voice: String) {
-        let previewText = "Hello, this is a preview of my voice. How do I sound to you?"
-        currentOpenAIVoice = voice
-        speakWithOpenAI(text: previewText, interruptible: true)
-    }
-    
-    // Set selected voice as default
-    func selectVoice(_ voice: String) {
-        currentOpenAIVoice = voice
-        print("🎤 Selected voice: \(voice)")
-        
-        // Play confirmation
-        let confirmationText = "Voice selected. I'm now your calming companion."
-        speakWithOpenAI(text: confirmationText, interruptible: true)
-    }
-    
-    // Update voice selection in UI
-    func updateVoiceSelection(_ voice: String) {
-        currentOpenAIVoice = voice
-        print("🎤 Voice updated to: \(voice)")
-    }
-    
-    // Get available voices with descriptions
-    func getAvailableVoices() -> [(String, String, String)] {
-        return [
-            ("shimmer", "Shimmer", "Soft, gentle, most soothing"),
-            ("echo", "Echo", "Warm, friendly, calming"),
-            ("alloy", "Alloy", "Clear, neutral, professional"),
-            ("nova", "Nova", "Bright, energetic, uplifting"),
-            ("fable", "Fable", "Expressive, storytelling"),
-            ("onyx", "Onyx", "Deep, authoritative, grounding")
-        ]
-    }
-    
-    // Toggle between OpenAI and native TTS
-    func toggleTTSMethod() {
-        useOpenAITTS.toggle()
-        print("🎤 TTS Method: \(useOpenAITTS ? "OpenAI" : "Native")")
-    }
-    
-    // Get available OpenAI voices
-    func getOpenAIVoices() -> [String] {
-        return ["alloy", "echo", "fable", "onyx", "nova", "shimmer"]
-    }
     
     // Simple OpenAI test without speech recognition conflicts
     func testSimpleOpenAI() {
@@ -884,8 +971,14 @@ class CrisisManager: NSObject, ObservableObject {
                     // Stop audio engine
                     audioEngine.stop()
                     
-                    // Resume speech recognition after TTS completes
-                    self?.resumeSpeechRecognition()
+                    // Restart speech recognition after TTS completes
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                        self?.restartSpeechRecognition()
+                        print("🔊 Speech recognition restarted after OpenAI TTS completion")
+                        
+                        // Process any queued speech after AI finishes
+                        self?.processQueuedSpeech()
+                    }
                 }
             }
             
@@ -954,22 +1047,15 @@ class CrisisManager: NSObject, ObservableObject {
         
         isTTSPlaying = true
         
-        // Pause speech recognition during TTS to prevent feedback
-        pauseSpeechRecognition()
+        // Stop speech recognition during TTS to prevent feedback
+        stopSpeechRecognition()
         
         // Voice test removed - using OpenAI TTS only
         
         print("🎤 Grounded Voice: '\(text)' (Interruptible: \(interruptible))")
         
-        // Resume speech recognition after TTS completes
-        let estimatedDuration = Double(text.count) * 0.08 // More accurate timing
-        DispatchQueue.main.asyncAfter(deadline: .now() + estimatedDuration) {
-            self.isTTSPlaying = false
-            self.isAnyAudioPlaying = false
-            
-            // Call completion handler
-            completion?()
-        }
+        // Speech recognition will be resumed by audioPlayerDidFinishPlaying callback
+        // This ensures proper timing based on actual audio completion
     }
     
     func pauseSpeechRecognition() {
@@ -1008,7 +1094,8 @@ class CrisisManager: NSObject, ObservableObject {
             
             // Process the queued speech immediately
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                print("🤖 Processing queued user speech: '\(queuedSpeech)'")
+                print("Processing queued user speech: '\(queuedSpeech)'")
+                print("Speech length: \(queuedSpeech.count) characters")
                 self.processSpeechText(queuedSpeech)
             }
         } else {
@@ -1392,21 +1479,9 @@ class CrisisManager: NSObject, ObservableObject {
     
     // Start thinking timer
     private func startThinkingTimer() {
-        stopThinkingTimer() // Stop any existing timer
-        
-        isProcessingRequest = true
-        thinkingTimer = Timer.scheduledTimer(withTimeInterval: thinkingDelay, repeats: false) { [weak self] _ in
-            self?.playThinkingSound()
-        }
-        
-        print("🧠 Thinking timer started - will play thinking sound after \(thinkingDelay)s")
-        
-        // Also start a backup timer for longer processing
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
-            if self.isProcessingRequest && !self.isTTSPlaying {
-                self.playThinkingSound()
-            }
-        }
+        // DISABLED: Thinking sounds are turned off
+        print("🧠 Thinking timer disabled - skipping")
+        return
     }
     
     // Stop thinking timer
@@ -1525,7 +1600,7 @@ class CrisisManager: NSObject, ObservableObject {
                 do {
                     let files = try fileManager.contentsOfDirectory(atPath: thinkingSoundsPath)
                     print("🧠 Available thinking sounds: \(files)")
-                } catch {
+        } catch {
                     print("❌ Error listing thinking sounds directory: \(error)")
                 }
             } else {
@@ -1699,21 +1774,9 @@ class CrisisManager: NSObject, ObservableObject {
     // MARK: - Thinking Sound Management
     
     private func startThinkingSound() {
-        // Don't play thinking sound if already playing TTS or thinking sound
-        guard !isTTSPlaying && !isPlayingThinkingSound else {
-            print("🎵 Skipping thinking sound - audio already playing")
-            return
-        }
-        
-        // Stop any existing thinking sound first
-        stopThinkingSound()
-        
-        // Use the new bundled thinking sound system
-        let soundCategory = chooseBestThinkingSoundCategory()
-        let randomSound = soundCategory.randomElement() ?? "umm"
-        
-        print("🎵 Starting thinking with sound: '\(randomSound)'")
-        playBundledThinkingSound(filename: randomSound)
+        // DISABLED: Thinking sounds are turned off
+        print("🎵 Thinking sounds disabled - skipping")
+        return
     }
     
     private func stopThinkingSound() {
@@ -1804,8 +1867,8 @@ class CrisisManager: NSObject, ObservableObject {
                 return
             }
             
-            // ENHANCED: Pause speech recognition during TTS to prevent interruption
-            cameraController?.pauseSpeechRecognition()
+            // ENHANCED: Stop speech recognition during TTS to prevent interruption
+            cameraController?.stopSpeechRecognition()
             
             // Play the high-quality audio
             if player.play() {
@@ -2019,7 +2082,14 @@ class CrisisManager: NSObject, ObservableObject {
     }
     
     func processSpeechText(_ text: String) {
-        print("🎤 Processing speech: \(text)")
+        print("Processing speech: \(text)")
+        print("Speech processing - isListeningEnabled: \(isListeningEnabled), isTTSPlaying: \(isTTSPlaying)")
+        
+        // Check if listening is enabled - ignore speech during Anchor message
+        guard isListeningEnabled else {
+            print("Listening disabled - ignoring speech during Anchor message: '\(text)'")
+            return
+        }
         
         // Phase 2: Intelligent Interruption Logic - Only stop TTS for meaningful speech
         if currentDialoguePhase == .continuousDialogue && isTTSPlaying && text.count > 8 {
@@ -2256,8 +2326,9 @@ class CrisisManager: NSObject, ObservableObject {
     }
     
     private func speakFallbackInstructions() {
-        // Try to use pre-recorded fallback audio first
-        playCriticalAudioFile("fallback_calm.mp3", interruptible: true)
+        // Use OpenAI TTS for fallback
+        let fallbackText = "I'm here to help you. Take a deep breath and focus on your surroundings."
+        speakWithOpenAI(text: fallbackText, interruptible: true)
     }
     
     // MARK: - Heart Rate Simulation
@@ -2277,10 +2348,25 @@ class CrisisManager: NSObject, ObservableObject {
     }
     
     func endCrisisMode() {
+        print("🛑 Ending crisis mode and resetting phase system")
+        
         currentDialoguePhase = .crisisEnd
         isCrisisMode = false
         showCamera = false
         conversationActive = false
+        
+        // Stop phase transition timer
+        phaseTransitionTimer?.invalidate()
+        phaseTransitionTimer = nil
+        
+        // Stop all AR systems
+        pingARManager.stopContinuousDetection()
+        realTimeARManager.stopRealTimeDetection()
+        
+        // Reset phase state
+        currentPhase = .computerVision
+        phaseStartTime = nil
+        cvScanCount = 0
         
         // Stop all timers
         crisisTimer?.invalidate()
@@ -2289,6 +2375,7 @@ class CrisisManager: NSObject, ObservableObject {
         textStreamTimer = nil
         imageStreamTimer?.invalidate()
         imageStreamTimer = nil
+        // voiceInputTimer removed - using Anchor message duration instead
         print("🛑 All conversation timers stopped")
         thinkingTimer?.invalidate()
         thinkingTimer = nil
@@ -2334,9 +2421,11 @@ class CrisisManager: NSObject, ObservableObject {
         
         print("🛑 All streams stopped - crisis intervention complete")
         print("🔄 All state reset for next session")
+        print("✅ Phase system reset to initial state")
         
-        // Speak ending message with critical audio file
-        playCriticalAudioFile("end_calm.mp3", interruptible: false)
+        // Speak ending message with OpenAI TTS
+        let endingText = "You're doing great. The crisis intervention is complete. Take care of yourself."
+        speakWithOpenAI(text: endingText, interruptible: false)
     }
     
 }
@@ -2349,12 +2438,14 @@ extension CrisisManager: AVAudioPlayerDelegate {
         if player == mainAudioPlayer {
             isTTSPlaying = false
             isAnyAudioPlaying = false
-            print("🎵 Base64 audio finished playing successfully: \(flag)")
+            print("Base64 audio finished playing successfully: \(flag)")
+            print("Flags reset - isTTSPlaying: \(isTTSPlaying), isListeningEnabled: \(isListeningEnabled)")
             
-            // CRITICAL: Ensure speech recognition is resumed after audio completes
+            // CRITICAL: Ensure speech recognition is restarted after audio completes
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                self.cameraController?.resumeSpeechRecognition()
-                print("▶️ Speech recognition resumed after Base64 audio completion")
+                self.cameraController?.restartSpeechRecognition()
+                print("🔊 Speech recognition restarted after Base64 audio completion")
+                print("Final flags - isTTSPlaying: \(self.isTTSPlaying), isListeningEnabled: \(self.isListeningEnabled)")
                 
                 // Process any queued speech after AI finishes
                 self.processQueuedSpeech()
@@ -2487,9 +2578,134 @@ extension CrisisManager: AVAudioPlayerDelegate {
     
     func testBreathingRing() {
         // Test ARKit breathing anchor with 4-7-8 pattern
-        print("🧪 Starting ARKit breathing anchor test")
+        print("Starting ARKit breathing anchor test")
+        print("Current showingBreathingAnchor: \(showingBreathingAnchor)")
+        print("Current isInARMode: \(isInARMode())")
+        
         showingBreathingAnchor = true
-        print("🎯 3D AR ping rings will be available when breathing anchor is active")
+        print("Set showingBreathingAnchor to: \(showingBreathingAnchor)")
+        
+        // Also switch to AR mode to ensure full AR functionality
+        if !isInARMode() {
+            print("Switching to AR mode for ocean breathing test")
+            transitionToARMode()
+        }
+        
+        print("Final showingBreathingAnchor: \(showingBreathingAnchor)")
+        print("Final isInARMode: \(isInARMode())")
+        print("3D AR ping rings will be available when breathing anchor is active")
+    }
+    
+    // MARK: - Sequential Two-Phase System Implementation
+    
+    private func startPhase1ComputerVision() {
+        print("\(currentPhase.description) - Starting rapid CV scanning")
+        currentPhase = .computerVision
+        phaseStartTime = Date()
+        cvScanCount = 0
+        
+        // Start rapid CV scanning (1-second intervals)
+        pingARManager.startContinuousDetectionWithPhase(.computerVision)
+        
+        // Schedule automatic transition to AR mode after 10 seconds
+        phaseTransitionTimer = Timer.scheduledTimer(withTimeInterval: 10.0, repeats: false) { [weak self] _ in
+            self?.transitionToARMode()
+        }
+        
+        print("Phase 1 timer set for 10 seconds - will automatically transition to AR mode")
+    }
+    
+    func transitionToARMode() {
+        print("Transitioning to \(CrisisPhase.arMode.description)")
+        
+        // STOP ALL DETECTION SYSTEMS - NO MORE PHOTOS OR BACKEND CALLS!
+        pingARManager.stopContinuousDetection()
+        realTimeARManager.stopRealTimeDetection()
+        
+        // CRITICAL: Set phase to AR mode in both managers to prevent any detection
+        pingARManager.currentPhase = .arMode
+        realTimeARManager.currentPhase = .arMode
+        print("🛑 ALL detection systems stopped and phase set to AR mode")
+        
+        // STOP ALL TIMERS - NO MORE PERIODIC TASKS!
+        crisisTimer?.invalidate()
+        crisisTimer = nil
+        textStreamTimer?.invalidate()
+        textStreamTimer = nil
+        imageStreamTimer?.invalidate()
+        imageStreamTimer = nil
+        print("🛑 ALL timers stopped")
+        
+        // STOP CAMERA SESSION
+        cameraController?.stopCameraPreview()
+        print("📸 Camera session stopped to prevent ARKit conflicts")
+        
+        // Reset frame counts
+        pingARManager.resetFrameCounts()
+        realTimeARManager.resetStats()
+        print("Frame counts reset")
+        
+        // Start AR systems
+        currentPhase = .arMode
+        phaseStartTime = Date()
+        
+        // DON'T START ANY DETECTION - JUST AR VISUALIZATION
+        // pingARManager.startContinuousDetectionWithPhase(.arMode)
+        // realTimeARManager.startRealTimeDetectionWithPhase(.arMode)
+        
+        // Enable AR overlays and 3D ping rings
+        showingBreathingAnchor = true
+        print("AR overlays and 3D ping rings now enabled")
+        print("showingBreathingAnchor set to: \(showingBreathingAnchor)")
+        
+        print("\(currentPhase.description) - PURE AR VISUALIZATION - NO DETECTION!")
+    }
+    
+    
+    // MARK: - Phase Status Monitoring
+    
+    func getPhaseStatus() -> (phase: CrisisPhase, elapsedTime: TimeInterval, scanCount: Int) {
+        let elapsedTime = phaseStartTime?.timeIntervalSinceNow ?? 0
+        return (currentPhase, abs(elapsedTime), cvScanCount)
+    }
+    
+    func isInComputerVisionPhase() -> Bool {
+        return currentPhase == .computerVision
+    }
+    
+    func isInARMode() -> Bool {
+        return currentPhase == .arMode
+    }
+    
+    func incrementScanCount() {
+        cvScanCount += 1
+        print("📸 CV Scan #\(cvScanCount) completed")
+    }
+    
+    // MARK: - Phase System Testing
+    
+    func testPhaseTransitions() {
+        print("🧪 Testing sequential two-phase system")
+        
+        // Test Phase 1: CV Scanning
+        print("📸 Testing Phase 1: CV Scanning")
+        startPhase1ComputerVision()
+        
+        // Simulate some scans
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+            self.incrementScanCount()
+        }
+        
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) {
+            self.incrementScanCount()
+        }
+        
+        DispatchQueue.main.asyncAfter(deadline: .now() + 6.0) {
+            self.incrementScanCount()
+        }
+        
+        // Test Phase 2: AR Mode (will happen automatically after 10 seconds)
+        print("⏰ Phase 2 transition will occur automatically after 10 seconds")
     }
     
 }

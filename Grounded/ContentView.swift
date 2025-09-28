@@ -22,10 +22,10 @@ extension Color {
 
 struct ContentView: View {
     @StateObject private var crisisManager = CrisisManager()
-    @State private var showingVoiceSelection = false
     @State private var showingMenu = false
     @State private var showingARShowcase = false
-    @State private var showBreathingOrb = false  // Don't show breathing orb at start
+    @State private var showBreathingOrb = false
+    @State private var showARDemo = false  // Don't show breathing orb at start
     
     var body: some View {
         ZStack {
@@ -131,6 +131,30 @@ struct ContentView: View {
                             )
                         }
                         
+                        // AR Demo button
+                        Button(action: {
+                            showARDemo = true
+                        }) {
+                            HStack(spacing: 12) {
+                                Image(systemName: "viewfinder")
+                                    .font(.system(size: 16))
+                                    .foregroundColor(.white.opacity(0.9))
+                                Text("AR Demo")
+                                    .font(.system(size: 16, weight: .medium))
+                                    .foregroundColor(.white.opacity(0.9))
+                            }
+                            .padding(.vertical, 12)
+                            .padding(.horizontal, 24)
+                            .background(
+                                RoundedRectangle(cornerRadius: 20)
+                                    .fill(.ultraThinMaterial)
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 20)
+                                            .stroke(Color.purple.opacity(0.4), lineWidth: 1)
+                                    )
+                            )
+                        }
+                        
                         // Main crisis button
                         Button(action: {
                             crisisManager.initiateCrisisProtocol()
@@ -180,6 +204,9 @@ struct ContentView: View {
         .fullScreenCover(isPresented: $crisisManager.showCamera) {
             CameraViewWithOverlay(crisisManager: crisisManager)
         }
+        .fullScreenCover(isPresented: $showARDemo) {
+            ARDemoView()
+        }
         .fullScreenCover(isPresented: $showBreathingOrb) {
             ZStack {
                 // Ocean breathing orb as main interface
@@ -225,37 +252,19 @@ struct ContentView: View {
                 }
             }
         }
-        .sheet(isPresented: $showingVoiceSelection) {
-            VoiceSelectionView(crisisManager: crisisManager)
-        }
         .sheet(isPresented: $showingMenu) {
-            MenuView(crisisManager: crisisManager, showingVoiceSelection: $showingVoiceSelection, showingARShowcase: $showingARShowcase)
+            MenuView(crisisManager: crisisManager, showingARShowcase: $showingARShowcase)
         }
         .sheet(isPresented: $showingARShowcase) {
             ARGraphicsShowcase()
         }
-        .sheet(isPresented: $crisisManager.showingBreathingAnchor) {
-            // ARKitBreathingAnchor DISABLED to prevent video freeze
-            // ARKitBreathingAnchor { sceneView in
-            //     // Bridge ARSCNView to the 3D ping manager for advanced overlays
-            //     crisisManager.ar3DPingManager.setSceneView(sceneView)
-            // }
-            
-            // Simple breathing view instead of ARKit
-            ZStack {
-                Color.black.ignoresSafeArea()
-                Text("Breathing Exercise\n(ARKit Disabled)")
-                    .foregroundColor(.white)
-                    .multilineTextAlignment(.center)
-            }
-        }
+        // AR breathing orb now shows in camera overlay during AR mode - no separate sheet needed
     }
 }
 
 // MARK: - Menu View - Forest Style
 struct MenuView: View {
     let crisisManager: CrisisManager
-    @Binding var showingVoiceSelection: Bool
     @Binding var showingARShowcase: Bool
     @Environment(\.dismiss) private var dismiss
     
@@ -276,14 +285,6 @@ struct MenuView: View {
                     
                     // Essential navigation options only
                     VStack(spacing: 20) {
-                    MenuButton(
-                        icon: "person.wave.2.fill",
-                        title: "Voice Selection",
-                        action: {
-                            showingVoiceSelection = true
-                            dismiss()
-                        }
-                    )
                     
                     MenuButton(
                         icon: "arkit",

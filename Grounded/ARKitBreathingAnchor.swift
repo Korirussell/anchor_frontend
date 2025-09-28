@@ -37,10 +37,10 @@ struct ARKitBreathingAnchor: View {
             )
             .ignoresSafeArea()
             .onAppear {
+                print("🏆 ARKitBreathingAnchor appeared - Crown jewel is loading!")
                 // Auto-start breathing animation immediately
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                    startBreathing()
-                }
+                print("🏆 Starting crown jewel breathing animation with blue bubbles!")
+                startBreathing()
             }
             
             // Minimal breathing instruction (no control button)
@@ -64,6 +64,7 @@ struct ARKitBreathingAnchor: View {
     }
     
     private func startBreathing() {
+        print("🏆 Crown jewel breathing started!")
         isActive = true
         breathingPhase = 0.0
         
@@ -71,6 +72,7 @@ struct ARKitBreathingAnchor: View {
         withAnimation(.easeInOut(duration: inhaleTime + holdTime + exhaleTime + pauseTime).repeatForever(autoreverses: false)) {
             breathingPhase = 1.0
         }
+        print("🏆 Breathing animation loop started with blue bubbles!")
     }
     
     private func stopBreathing() {
@@ -94,9 +96,13 @@ struct ARBreathingSceneView: UIViewRepresentable {
     var onSceneViewReady: ((ARSCNView) -> Void)? = nil
     
     func makeUIView(context: Context) -> ARSCNView {
+        print("🏆 Creating ARSCNView for crown jewel AR orb!")
         let sceneView = ARSCNView()
         sceneView.delegate = context.coordinator
         sceneView.showsStatistics = false
+        sceneView.debugOptions = []
+        
+        // Keep debug options minimal to avoid interfering with orb visibility
         sceneView.debugOptions = []
         
         // Set scene view reference in coordinator
@@ -105,12 +111,34 @@ struct ARBreathingSceneView: UIViewRepresentable {
         // Create a new scene
         let scene = SCNScene()
         sceneView.scene = scene
+        print("🏆 3D scene created for ocean orb")
         
         // Add lighting
         setupLighting(scene: scene)
         
+        // Add the ocean breathing orb immediately to verify AR is working
+        let oceanOrb = SCNSphere(radius: 0.08)
+        let oceanMaterial = SCNMaterial()
+        oceanMaterial.diffuse.contents = UIColor(red: 0.2, green: 0.6, blue: 0.9, alpha: 1.0)
+        oceanMaterial.emission.contents = UIColor(red: 0.1, green: 0.3, blue: 0.6, alpha: 0.3)
+        oceanOrb.materials = [oceanMaterial]
+        
+        let oceanNode = SCNNode(geometry: oceanOrb)
+        oceanNode.position = SCNVector3(0, 0, -1.5) // In front of camera
+        scene.rootNode.addChildNode(oceanNode)
+        print("🏆 Added ocean breathing orb immediately to verify AR is working")
+        
+        // Add simple breathing animation to the orb
+        let breatheUp = SCNAction.scale(to: 1.3, duration: 4.0)
+        let breatheDown = SCNAction.scale(to: 1.0, duration: 4.0)
+        let breatheSequence = SCNAction.sequence([breatheUp, breatheDown])
+        let breatheRepeat = SCNAction.repeatForever(breatheSequence)
+        oceanNode.runAction(breatheRepeat)
+        print("🏆 Started breathing animation on ocean orb")
+        
         // Start AR session
         startARSession(sceneView: sceneView)
+        print("🏆 AR session started for crown jewel")
         
         // Notify when ready so external systems can attach content (e.g., AR3D pings)
         onSceneViewReady?(sceneView)
@@ -156,9 +184,26 @@ struct ARBreathingSceneView: UIViewRepresentable {
     }
     
     private func startARSession(sceneView: ARSCNView) {
+        print("Starting AR session for crown jewel")
         let configuration = ARWorldTrackingConfiguration()
         configuration.planeDetection = [.horizontal]
+        
+        // Advanced AR settings for impressive visuals
+        if #available(iOS 13.0, *) {
+            configuration.environmentTexturing = .automatic
+        }
+        if #available(iOS 11.3, *) {
+            configuration.planeDetection = [.horizontal, .vertical]
+        }
+        
+        // Check if AR is supported
+        guard ARWorldTrackingConfiguration.isSupported else {
+            print("AR World Tracking not supported on this device")
+            return
+        }
+        
         sceneView.session.run(configuration)
+        print("AR session started successfully with advanced settings")
     }
     
     func makeCoordinator() -> ARBreathingCoordinator {
@@ -309,6 +354,7 @@ class ARBreathingCoordinator: NSObject, ARSCNViewDelegate {
         exhaleTime: TimeInterval,
         pauseTime: TimeInterval
     ) {
+        print("🏆 updateBreathingState called - isActive: \(isActive), breathingNode exists: \(breathingNode != nil)")
         self.isBreathingActive = isActive
         self.breathingPhase = breathingPhase
         self.inhaleTime = inhaleTime
@@ -317,17 +363,29 @@ class ARBreathingCoordinator: NSObject, ARSCNViewDelegate {
         self.pauseTime = pauseTime
         
         if isActive && breathingNode == nil {
+            print("🏆 Creating breathing visualization for crown jewel!")
             createBreathingVisualization()
             startHapticFeedback()
         } else if !isActive {
+            print("🛑 Stopping breathing visualization")
             stopBreathing()
             stopHapticFeedback()
+        } else {
+            print("🏆 Breathing active but node already exists - updating animation")
+            // Update existing animation if needed
+            if breathingNode != nil {
+                print("🏆 Node exists, animation should already be running")
+            }
         }
     }
     
     private func createBreathingVisualization() {
-        guard let sceneView = getSceneView() else { return }
+        guard let sceneView = getSceneView() else { 
+            print("❌ No scene view available for crown jewel")
+            return 
+        }
         
+        print("🏆 Creating crown jewel ocean orb with blue bubbles!")
         // Create Apple Health-style breathing sphere
         let breathingGeometry = createBreathingGeometry()
         breathingNode = SCNNode(geometry: breathingGeometry)
@@ -336,17 +394,21 @@ class ARBreathingCoordinator: NSObject, ARSCNViewDelegate {
         breathingNode?.position = SCNVector3(0, 0, -1.5)
         
         // Add dynamic water splash particle system
+        print("🌊 Adding water splash particle system with blue bubbles!")
         let waterSplashSystem = createWaterSplashSystem()
         breathingNode?.addParticleSystem(waterSplashSystem)
         
         // Add underwater caustics effect
+        print("✨ Adding underwater caustics effect!")
         addUnderwaterCaustics(to: breathingNode!)
         
         // Add inner water flow
+        print("💧 Adding inner water flow!")
         addInnerWaterFlow(to: breathingNode!)
         
         // Add the node to the scene
         sceneView.scene.rootNode.addChildNode(breathingNode!)
+        print("🏆 Crown jewel ocean orb added to 3D scene!")
         
         // Start breathing animation
         startBreathingCycle()
@@ -1421,15 +1483,34 @@ class ARBreathingCoordinator: NSObject, ARSCNViewDelegate {
     // MARK: - ARSCNViewDelegate
     
     func session(_ session: ARSession, didFailWithError error: Error) {
-        print("AR Session failed with error: \(error.localizedDescription)")
+        print("❌ AR Session failed with error: \(error.localizedDescription)")
     }
     
     func sessionWasInterrupted(_ session: ARSession) {
+        print("⚠️ AR Session interrupted - stopping breathing")
         stopBreathing()
     }
     
     func sessionInterruptionEnded(_ session: ARSession) {
+        print("✅ AR Session interruption ended")
         // Restart AR session if needed
+    }
+    
+    func session(_ session: ARSession, didUpdate frame: ARFrame) {
+        // AR frame updated - this means AR is working
+        print("🎯 AR frame updated - session is working!")
+        if breathingNode == nil && isBreathingActive {
+            print("🎯 AR frame detected - creating crown jewel orb!")
+            createBreathingVisualization()
+        }
+    }
+    
+    func session(_ session: ARSession, didAdd anchors: [ARAnchor]) {
+        print("🎯 AR anchors added: \(anchors.count)")
+    }
+    
+    func session(_ session: ARSession, didUpdate anchors: [ARAnchor]) {
+        print("🎯 AR anchors updated: \(anchors.count)")
     }
 }
 
