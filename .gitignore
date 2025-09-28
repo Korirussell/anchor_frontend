@@ -1,0 +1,69 @@
+# Xcode
+.DS_Store
+*/build/*
+*.pbxuser
+!default.pbxuser
+*.mode1v3
+!default.mode1v3
+*.mode2v3
+!default.mode2v3
+*.perspectivev3
+!default.perspectivev3
+xcuserdata/
+profile
+*.moved-aside
+DerivedData/
+.idea/
+*.hmap
+*.xccheckout
+*.xcworkspace
+!default.xcworkspace
+
+# API Keys and Secrets
+.env
+.env.local
+.env.development
+.env.production
+config.json
+secrets.json
+*api_key*
+*secret*
+
+# Audio Files (if large)
+*.mp3
+*.wav
+*.m4a
+!AudioFiles/thinking_sounds/*.mp3
+!AudioFiles/*.mp3
+
+# Backend
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+grounded_env/
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+*.tmp
+*.temp
+*~
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
